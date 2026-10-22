@@ -22,7 +22,8 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc -p tsconfig.check.json",
-    "test": "npm run build && node --test \"test/*.test.ts\""
+    "test": "npm run build && node --test \"test/*.test.ts\"",
+    "prepare": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
