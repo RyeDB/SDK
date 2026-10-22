@@ -17,9 +17,9 @@ flowchart LR
 
 ## Status
 
-- **Channel client: usable today** against a local daemon. It implements the whole channel port, defined by [`contracts/channel-port.openapi.json`](contracts/channel-port.openapi.json) (copied from [RyeDB/core](https://github.com/RyeDB/core); a test fails if the client and the contract drift apart).
-- **Not published to npm yet.** Install from this repository for now.
-- **Memory and rules are not in the SDK.** Agents use those through the [MCP server](https://github.com/RyeDB/mcp). There is no hosted RyeDB service, so there is no remote client.
+- **Channel client: usable today** against a local daemon. It implements the whole channel port, defined by [`contracts/channel-port.openapi.json`](contracts/channel-port.openapi.json) (copied from RyeDB core, which is developed in a private repository; a test fails if the client and the contract drift apart).
+- **Not published to npm yet.** Install from this repository for now. Running the client needs a RyeDB daemon, which is part of core and not publicly available yet.
+- **Memory and rules are not in the SDK.** Agents use those through the [MCP server](https://github.com/RyeDB/MCP) (its public contract and setup are in that repository). There is no hosted RyeDB service, so there is no remote client.
 
 ## Use
 
@@ -70,7 +70,7 @@ for await (const m of ch.stream({ signal: stop.signal })) {
 npm ci
 npm run typecheck
 npm test                                   # unit tests, contract check
-RYEDB_CORE=/path/to/built/core npm test    # also runs against a real daemon
+RYEDB_CORE=/path/to/built/core npm test    # also runs against a real daemon (needs access to core)
 ```
 
 Licensed under Apache-2.0. See [SECURITY.md](https://github.com/RyeDB/.github/blob/main/SECURITY.md) to report a vulnerability.
