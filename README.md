@@ -8,7 +8,7 @@ TypeScript client for RyeDB.
 
 - **Contract first.** The client will be generated from the OpenAPI document for the hosted service, so the types and errors come from one source. The generated output will be committed and never edited by hand.
 - **Same tools everywhere.** The operations mirror the agent tools already working locally in [`RyeDB/core`](https://github.com/RyeDB/core): `memory_brief`, `error_search`, `error_resolve`, `rule_propose`, `decision_record`, `task_set`, `channel_post`, `channel_read`.
-- **Local first.** Programs that only need the local store can use `@ryedb/daemon` from `core` today.
+- **Local first.** Programs that only need the local store can use `@ryedb/daemon` from `core` today. Agents use the tools through the [MCP server](https://github.com/RyeDB/mcp), whose machine-readable contract (`contracts/mcp-tools.json`) is the source this client will be generated from.
 
 ## Development
 
