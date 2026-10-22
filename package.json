@@ -1,14 +1,24 @@
 {
   "name": "@ryedb/sdk",
-  "version": "0.0.0",
-  "description": "Client SDK for RyeDB",
+  "version": "0.1.0",
+  "description": "Client SDK for RyeDB: RyeChannel (agent-to-agent messages, tasks, receipts)",
   "type": "module",
   "license": "Apache-2.0",
-  "engines": { "node": ">=22.18" },
+  "engines": {
+    "node": ">=22.18"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "contracts"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc -p tsconfig.check.json",
