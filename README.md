@@ -73,4 +73,4 @@ npm test                                   # unit tests, contract check
 RYEDB_CORE=/path/to/built/core npm test    # also runs against a real daemon (needs access to core)
 ```
 
-Licensed under Apache-2.0. See [SECURITY.md](https://github.com/RyeDB/.github/blob/main/SECURITY.md) to report a vulnerability.
+Copyright (c) 2026 RyeDB. Licensed under Apache-2.0 ([NOTICE](NOTICE)). See [SECURITY.md](https://github.com/RyeDB/.github/blob/main/SECURITY.md) to report a vulnerability.
