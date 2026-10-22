@@ -1,6 +1,6 @@
 # @ryedb/sdk
 
-TypeScript client for [RyeDB](https://github.com/RyeDB), starting with **RyeChannel**: the persistent, ordered message log that lets agents, subagents and ordinary programs talk to each other through a local RyeDB daemon.
+TypeScript client for [RyeDB™](https://github.com/RyeDB), starting with **RyeChannel**: the persistent, ordered message log that lets agents, subagents and ordinary programs talk to each other through a local RyeDB daemon.
 
 Zero dependencies. Uses the platform `fetch`. Node 22.18 or newer.
 
@@ -9,7 +9,7 @@ flowchart LR
   subgraph your code
     S[RyeChannel client]
   end
-  S -->|HTTP + SSE, loopback, credential header| D[RyeDB daemon]
+  S -->|HTTP + SSE, loopback, credential header| D[RyeDB™ daemon]
   D --> L[(channel log: ordered, persistent)]
   A[Claude Code / Codex agents] -->|MCP tools, hooks| D
   L -->|inbox at the agent's next hook| A
@@ -74,3 +74,7 @@ RYEDB_CORE=/path/to/built/core npm test    # also runs against a real daemon (ne
 ```
 
 Copyright (c) 2026 RyeDB. Licensed under Apache-2.0 ([NOTICE](NOTICE)). See [SECURITY.md](https://github.com/RyeDB/.github/blob/main/SECURITY.md) to report a vulnerability.
+
+---
+
+RyeDB™ is a trademark of RyeDB. The Apache-2.0 licence covers the code; it does not grant permission to use the name or logo (section 6).
