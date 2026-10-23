@@ -12,8 +12,28 @@ export interface Message {
   via: "hook" | "mcp" | "cli" | "port";
   /** 1 when the sender proved its identity with its own credential; 0 when the name is self-declared. */
   auth: 0 | 1;
+  /** How much the message should interrupt a person; only used for messages to `human`. */
+  priority: "low" | "normal" | "high";
   ts: number;
 }
+
+export type WorkState = "waiting" | "ready" | "claimed" | "done" | "failed" | "needs-human" | "blocked";
+/** A task with its orchestration state. Mirrors `components.schemas.WorkItem`. */
+export interface WorkItem {
+  seq: number;
+  from_agent: string;
+  to_agent: string | null;
+  body: string;
+  state: WorkState;
+  deps: number[];
+  attempts: number;
+  max_attempts: number;
+  claimed_by: string | null;
+  /** Epoch milliseconds. */
+  lease_until: number | null;
+}
+/** A message to the person (`to` = `human`) with whether they have seen and answered it. */
+export type Notification = Message & { seen: boolean; answered: boolean };
 
 export type Task = Message & { state: "open" | "done" };
 export interface Presence { id: string; kind: string; last_seen: number; streaming: boolean }
@@ -59,9 +79,47 @@ export class RyeChannel {
     return new RyeChannel({ port: cfg.httpPort, projectToken, agentToken: o.agentToken, agent: o.agent });
   }
 
-  async post(m: { body: string; to?: string; kind?: string; replyTo?: number; from?: string }): Promise<Message> {
+  async post(m: { body: string; to?: string; kind?: string; replyTo?: number; from?: string; priority?: "low" | "normal" | "high" }): Promise<Message> {
     const from = this.#headers["x-ryedb-agent-token"] ? undefined : (m.from ?? this.#agent);
-    return this.#json("POST", "/channel/post", { body: m.body, to: m.to, kind: m.kind, reply_to: m.replyTo, from });
+    return this.#json("POST", "/channel/post", { body: m.body, to: m.to, kind: m.kind, reply_to: m.replyTo, from, priority: m.priority });
+  }
+
+  /**
+   * Post a task that waits for others: `deps` are tasks (they must exist) that have to be done first, and `maxAttempts` (1 to 10, default 3) is how many
+   * tries it gets before it is closed as failed. Returns the message and its work item.
+   */
+  async addTask(t: { body: string; to?: string; deps?: number[]; maxAttempts?: number; from?: string }): Promise<{ message: Message; work: WorkItem }> {
+    const from = this.#headers["x-ryedb-agent-token"] ? undefined : (t.from ?? this.#agent);
+    // The daemon answers with the bare message unless the task has dependencies or a cap; ask for the cap explicitly so the shape is always the same.
+    return this.#json("POST", "/channel/post", { body: t.body, to: t.to, kind: "task", from, deps: t.deps ?? [], max_attempts: t.maxAttempts ?? 3 });
+  }
+
+  /** Take the oldest ready task addressed to the agent (or to everyone) for `leaseSeconds` (5 to 3600, default 300). Null when nothing is ready. */
+  async claim(o: { leaseSeconds?: number; seq?: number; agent?: string } = {}): Promise<WorkItem | null> {
+    return this.#json("POST", `/channel/tasks/claim${this.#q({ agent: o.agent })}`, { lease_seconds: o.leaseSeconds, seq: o.seq });
+  }
+
+  /** Still working: push the lease of a claimed task out. False when the claim is not this agent's or has lapsed. */
+  async heartbeat(seq: number, o: { leaseSeconds?: number; agent?: string } = {}): Promise<boolean> {
+    return (await this.#json<{ extended: boolean }>("POST", `/channel/tasks/heartbeat${this.#q({ agent: o.agent })}`, { seq, lease_seconds: o.leaseSeconds })).extended;
+  }
+
+  /**
+   * Report how a claimed task ended. `done` posts the result and unblocks dependants; `failed` retries until attempts run out (`retry` says whether it will);
+   * `needs-human` closes it for a person, who is notified. Only the agent holding the claim may finish it.
+   */
+  async finish(seq: number, outcome: "done" | "failed" | "needs-human", body = "", o: { agent?: string } = {}): Promise<{ state: WorkState; retry: boolean }> {
+    return this.#json("POST", `/channel/tasks/finish${this.#q({ agent: o.agent })}`, { seq, outcome, body });
+  }
+
+  /** Every task with its state, newest first: the orchestrator's view. */
+  async board(o: { limit?: number } = {}): Promise<WorkItem[]> {
+    return this.#json("GET", `/channel/board${this.#q({ limit: o.limit })}`);
+  }
+
+  /** What agents have sent the person (messages to `human`), newest first. `unreadOnly` keeps the new ones. */
+  async notifications(o: { unreadOnly?: boolean } = {}): Promise<Notification[]> {
+    return this.#json("GET", `/channel/notifications${this.#q({ unread: o.unreadOnly ? "1" : undefined })}`);
   }
 
   /** Messages for the agent after `after`. Does not move any cursor: the caller keeps its own position. */
@@ -141,7 +199,7 @@ export class RyeChannel {
   async #error(res: Response): Promise<RyeDBError> {
     let msg = res.statusText;
     try { msg = ((await res.json()) as { error?: string }).error ?? msg; } catch { /* no body */ }
-    const code = res.status === 401 ? "unauthorized" : res.status === 403 ? "forbidden" : res.status === 429 ? "rate_limited" : res.status === 400 ? "bad_request" : "failed";
+    const code = res.status === 401 ? "unauthorized" : res.status === 403 ? "forbidden" : res.status === 429 ? "rate_limited" : res.status === 409 ? "conflict" : res.status === 400 ? "bad_request" : "failed";
     return new RyeDBError(code, msg, res.status);
   }
 }

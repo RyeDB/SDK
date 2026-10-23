@@ -13,15 +13,18 @@
     },
     "schemas": {
       "AgentName": { "type": "string", "pattern": "^[\\w.:@#-]{1,64}$" },
+      "WorkState": { "enum": ["waiting", "ready", "claimed", "done", "failed", "needs-human", "blocked"], "description": "waiting: a dependency is not done. blocked: a dependency failed or needs a person." },
+      "WorkItem": { "type": "object", "required": ["seq", "from_agent", "to_agent", "body", "state", "deps", "attempts", "max_attempts", "claimed_by", "lease_until"], "properties": { "seq": { "type": "integer" }, "from_agent": { "type": "string" }, "to_agent": { "type": ["string", "null"] }, "body": { "type": "string" }, "state": { "$ref": "#/components/schemas/WorkState" }, "deps": { "type": "array", "items": { "type": "integer" } }, "attempts": { "type": "integer" }, "max_attempts": { "type": "integer" }, "claimed_by": { "type": ["string", "null"] }, "lease_until": { "type": ["integer", "null"], "description": "epoch milliseconds" } } },
       "Message": {
         "type": "object",
-        "required": ["seq", "channel", "from_agent", "to_agent", "kind", "body", "reply_to", "via", "auth", "ts"],
+        "required": ["seq", "channel", "from_agent", "to_agent", "kind", "body", "reply_to", "via", "auth", "priority", "ts"],
         "properties": {
           "seq": { "type": "integer", "minimum": 1 },
           "channel": { "type": "string" },
           "from_agent": { "$ref": "#/components/schemas/AgentName" },
           "to_agent": { "oneOf": [{ "$ref": "#/components/schemas/AgentName" }, { "type": "null" }], "description": "null means everyone" },
-          "kind": { "type": "string", "maxLength": 32, "description": "note, task, result, ... A task is answered by a message of kind result whose reply_to is the task." },
+          "kind": { "type": "string", "maxLength": 32, "description": "note, task, result, ask, notify, alert, answer, ... A task is answered by a message of kind result whose reply_to is the task. A message to the person (to = human) is a notification: ask when a decision is needed, notify or alert for news." },
+          "priority": { "type": "string", "enum": ["low", "normal", "high"], "description": "How much the message should interrupt a person; only used for messages to human. Anything else is read as normal." },
           "body": { "type": "string", "maxLength": 4000 },
           "reply_to": { "oneOf": [{ "type": "integer" }, { "type": "null" }] },
           "via": { "enum": ["hook", "mcp", "cli", "port"] },
@@ -47,8 +50,15 @@
     "/channel/post": {
       "post": {
         "summary": "Post a message",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["body"], "properties": { "from": { "$ref": "#/components/schemas/AgentName" }, "to": { "$ref": "#/components/schemas/AgentName" }, "kind": { "type": "string", "maxLength": 32 }, "body": { "type": "string", "minLength": 1 }, "reply_to": { "type": "integer" } } } } } },
-        "responses": { "200": { "description": "The stored message", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Message" } } } }, "400": { "$ref": "#/components/responses/Bad" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "429": { "$ref": "#/components/responses/TooMany" } }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["body"], "properties": { "from": { "$ref": "#/components/schemas/AgentName" }, "to": { "$ref": "#/components/schemas/AgentName" }, "kind": { "type": "string", "maxLength": 32 }, "priority": { "type": "string", "enum": ["low", "normal", "high"] }, "body": { "type": "string", "minLength": 1 }, "reply_to": { "type": "integer" }, "deps": { "type": "array", "items": { "type": "integer" }, "maxItems": 50, "description": "kind task only: tasks that must be done first (they must exist)" }, "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10, "description": "kind task only: tries before the task is closed as failed (default 3)" } } } } } },
+        "responses": { "200": { "description": "The stored message; for a task posted with deps or max_attempts, an object with the message and its work item", "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/Message" }, { "type": "object", "required": ["message", "work"], "properties": { "message": { "$ref": "#/components/schemas/Message" }, "work": { "$ref": "#/components/schemas/WorkItem" } } }] } } } }, "400": { "$ref": "#/components/responses/Bad" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "429": { "$ref": "#/components/responses/TooMany" } }
+      }
+    },
+    "/channel/notifications": {
+      "get": {
+        "summary": "What agents sent the person (messages to human), newest first, each with whether it was seen and answered. unread=1 keeps only the new ones.",
+        "parameters": [{ "name": "unread", "in": "query", "required": false, "schema": { "type": "string", "enum": ["1"] } }],
+        "responses": { "200": { "description": "Notifications", "content": { "application/json": { "schema": { "type": "array", "items": { "allOf": [{ "$ref": "#/components/schemas/Message" }, { "type": "object", "required": ["seen", "answered"], "properties": { "seen": { "type": "boolean" }, "answered": { "type": "boolean" } } }] } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     },
     "/channel/read": {
@@ -80,10 +90,41 @@
         "responses": { "200": { "description": "Tasks, newest first, each with state", "content": { "application/json": { "schema": { "type": "array", "items": { "allOf": [{ "$ref": "#/components/schemas/Message" }, { "type": "object", "required": ["state"], "properties": { "state": { "enum": ["open", "done"] } } }] } } } } }, "400": { "$ref": "#/components/responses/Bad" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     },
+    "/channel/board": {
+      "get": {
+        "summary": "Orchestration: every task with its state (waiting, ready, claimed, done, failed, needs-human, blocked), dependencies, attempts and holder.",
+        "parameters": [{ "name": "limit", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }],
+        "responses": { "200": { "description": "Tasks, newest first", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/WorkItem" } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/channel/tasks/claim": {
+      "post": {
+        "summary": "Take the oldest ready task addressed to the agent (or to everyone) for a lease. Null when nothing is ready. Tasks with dependencies wait until those are done.",
+        "parameters": [{ "$ref": "#/components/parameters/agent" }],
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "lease_seconds": { "type": "integer", "minimum": 5, "maximum": 3600, "default": 300 }, "seq": { "type": "integer", "description": "claim this task only" } } } } } },
+        "responses": { "200": { "description": "The claimed task, or null", "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/WorkItem" }, { "type": "null" }] } } } }, "400": { "$ref": "#/components/responses/Bad" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/channel/tasks/heartbeat": {
+      "post": {
+        "summary": "Still working: push the lease of a claimed task out. extended is false when the claim is not the agent's or has lapsed.",
+        "parameters": [{ "$ref": "#/components/parameters/agent" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["seq"], "properties": { "seq": { "type": "integer" }, "lease_seconds": { "type": "integer", "minimum": 5, "maximum": 3600 } } } } } },
+        "responses": { "200": { "description": "Whether the lease was extended", "content": { "application/json": { "schema": { "type": "object", "required": ["extended"], "properties": { "extended": { "type": "boolean" } } } } } }, "400": { "$ref": "#/components/responses/Bad" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/channel/tasks/finish": {
+      "post": {
+        "summary": "Report how a claimed task ended. done posts the result and unblocks dependants; failed retries until attempts run out; needs-human closes it for a person.",
+        "parameters": [{ "$ref": "#/components/parameters/agent" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["seq", "outcome"], "properties": { "seq": { "type": "integer" }, "outcome": { "enum": ["done", "failed", "needs-human"] }, "body": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "The task's new state", "content": { "application/json": { "schema": { "type": "object", "required": ["state", "retry"], "properties": { "state": { "$ref": "#/components/schemas/WorkState" }, "retry": { "type": "boolean" } } } } } }, "400": { "$ref": "#/components/responses/Bad" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "description": "Not claimed by this agent, or already closed" } }
+      }
+    },
     "/channel/presence": {
       "get": {
         "summary": "Agents seen in the last 10 minutes on any route, and whether each has a stream open.",
-        "responses": { "200": { "description": "Agents", "content": { "application/json": { "schema": { "type": "array", "items": { "type": "object", "required": ["id", "kind", "last_seen", "streaming"], "properties": { "id": { "type": "string" }, "kind": { "type": "string" }, "last_seen": { "type": "integer" }, "streaming": { "type": "boolean" } } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+        "responses": { "200": { "description": "Agents", "content": { "application/json": { "schema": { "type": "array", "items": { "type": "object", "required": ["id", "kind", "handle", "last_seen", "streaming"], "properties": { "id": { "type": "string" }, "kind": { "type": "string" }, "handle": { "type": "string", "description": "How to call this agent: @main, or @type-xxxx for a subagent (@type reaches any subagent of that type)." }, "last_seen": { "type": "integer" }, "streaming": { "type": "boolean" } } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     }
   }

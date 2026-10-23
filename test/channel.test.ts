@@ -9,7 +9,7 @@ import { RyeChannel, RyeDBError } from "../src/index.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const spec = JSON.parse(readFileSync(join(here, "../contracts/channel-port.openapi.json"), "utf8")) as { paths: Record<string, Record<string, unknown>> };
 
-const msg = (seq: number, body = "hi") => ({ seq, channel: "main", from_agent: "a", to_agent: "b", kind: "note", body, reply_to: null, via: "port", auth: 0, ts: 1 });
+const msg = (seq: number, body = "hi") => ({ seq, channel: "main", from_agent: "a", to_agent: "b", kind: "note", body, reply_to: null, via: "port", auth: 0, priority: "normal", ts: 1 });
 
 /** A stand-in daemon that answers the documented routes and records what it was sent. */
 async function fake(handler: (req: IncomingMessage, url: URL, body: string, res: import("node:http").ServerResponse) => void) {
@@ -105,7 +105,7 @@ test("stream does not retry a wrong credential", async () => {
 
 test("contract: the client calls exactly the paths the OpenAPI document defines", () => {
   const src = readFileSync(join(here, "../src/channel.ts"), "utf8");
-  const used = new Set([...src.matchAll(/\/channel\/([a-z]+)/g)].map((m) => `/channel/${m[1]}`));
+  const used = new Set([...src.matchAll(/\/channel\/[a-z]+(?:\/[a-z]+)?/g)].map((m) => m[0]));
   assert.deepEqual([...used].sort(), Object.keys(spec.paths).sort());
 });
 
@@ -140,6 +140,109 @@ test("against the real daemon: credentials, tasks, receipts, stream", { skip: co
     assert.equal((await worker.tasks({ state: "done" })).length, 1);
     await assert.rejects(new RyeChannel({ port, agentToken: "ryc_wrong" }).presence(), (e: unknown) => e instanceof RyeDBError && e.code === "unauthorized");
     assert.ok((await lead.presence()).some((a) => a.id === "worker-1"));
+  } finally {
+    await d.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const work = (seq: number, over: Record<string, unknown> = {}) => ({ seq, from_agent: "lead", to_agent: "w", body: "job", state: "claimed", deps: [], attempts: 1, max_attempts: 3, claimed_by: "w", lease_until: 5, ...over });
+
+test("tasks can wait for others, be claimed with a lease, kept alive and finished", async () => {
+  const f = await fake((_r, u, b, res) => {
+    if (u.pathname === "/channel/post") return json(res, 200, { message: msg(7), work: work(7, { state: "waiting", deps: [5, 6] }) });
+    if (u.pathname === "/channel/tasks/claim") return json(res, 200, work(7));
+    if (u.pathname === "/channel/tasks/heartbeat") return json(res, 200, { extended: JSON.parse(b).seq === 7 });
+    if (u.pathname === "/channel/tasks/finish") return json(res, 200, { state: "done", retry: false });
+    json(res, 404, { error: "no" });
+  });
+  try {
+    const c = new RyeChannel({ port: f.port, agentToken: "ryc_w" });
+    const t = await c.addTask({ body: "ship it", to: "w", deps: [5, 6], maxAttempts: 2 });
+    assert.equal(t.work.state, "waiting");
+    assert.deepEqual(JSON.parse(f.seen[0]!.body), { body: "ship it", to: "w", kind: "task", deps: [5, 6], max_attempts: 2 });
+    assert.equal((await c.claim({ leaseSeconds: 60 }))!.seq, 7);
+    assert.deepEqual(JSON.parse(f.seen[1]!.body), { lease_seconds: 60 });
+    assert.equal(await c.heartbeat(7), true);
+    assert.equal(await c.heartbeat(8), false);
+    assert.deepEqual(await c.finish(7, "done", "shipped"), { state: "done", retry: false });
+    assert.deepEqual(JSON.parse(f.seen.at(-1)!.body), { seq: 7, outcome: "done", body: "shipped" });
+  } finally { await f.close(); }
+});
+
+test("a plain task gets the default dependencies and attempts so the answer always has the same shape", async () => {
+  const f = await fake((_r, _u, _b, res) => json(res, 200, { message: msg(1), work: work(1, { state: "ready" }) }));
+  try {
+    await new RyeChannel({ port: f.port, agentToken: "ryc_x" }).addTask({ body: "go" });
+    assert.deepEqual(JSON.parse(f.seen[0]!.body), { body: "go", kind: "task", deps: [], max_attempts: 3 });
+  } finally { await f.close(); }
+});
+
+test("claim returns null when nothing is ready, and finishing a task that is not yours is a conflict", async () => {
+  const f = await fake((_r, u, _b, res) => (u.pathname === "/channel/tasks/claim" ? json(res, 200, null) : json(res, 409, { error: "this task is not claimed by you" })));
+  try {
+    const c = new RyeChannel({ port: f.port, projectToken: "t", agent: "w" });
+    assert.equal(await c.claim(), null);
+    assert.match(f.seen[0]!.path, /agent=w/);
+    await assert.rejects(c.finish(3, "done"), (e: unknown) => e instanceof RyeDBError && e.code === "conflict" && e.status === 409);
+  } finally { await f.close(); }
+});
+
+test("the board lists every task, and notifications are what agents sent the person", async () => {
+  const f = await fake((_r, u, _b, res) => json(res, 200, u.pathname === "/channel/board" ? [work(2, { state: "needs-human" })] : [{ ...msg(9, "task #2 needs a person"), to_agent: "human", priority: "high", seen: false, answered: false }]));
+  try {
+    const c = new RyeChannel({ port: f.port, agentToken: "ryc_x" });
+    assert.equal((await c.board({ limit: 10 }))[0]!.state, "needs-human");
+    assert.equal(f.seen[0]!.path, "/channel/board?limit=10");
+    const n = await c.notifications({ unreadOnly: true });
+    assert.equal(n[0]!.priority, "high");
+    assert.equal(f.seen[1]!.path, "/channel/notifications?unread=1");
+  } finally { await f.close(); }
+});
+
+test("a message can carry a priority", async () => {
+  const f = await fake((_r, _u, _b, res) => json(res, 200, msg(1)));
+  try {
+    await new RyeChannel({ port: f.port, agentToken: "ryc_x" }).post({ body: "deploy is red", to: "human", kind: "alert", priority: "high" });
+    assert.equal(JSON.parse(f.seen[0]!.body).priority, "high");
+  } finally { await f.close(); }
+});
+
+test("against the real daemon: dependencies, claims, retries and the person being told", { skip: core ? false : "set RYEDB_CORE to a built RyeDB/core checkout" }, async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const net = await import("node:net");
+  const { startDaemon } = (await import(join(core!, "packages/daemon/dist/index.js"))) as { startDaemon: (o: { root: string; idleMs: number }) => Promise<{ store: any; close(): Promise<void> }> };
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ryedb-sdk-")));
+  const port = await new Promise<number>((r) => { const s = net.createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as import("node:net").AddressInfo).port; s.close(() => r(p)); }); });
+  mkdirSync(join(root, ".ryedb"), { recursive: true });
+  writeFileSync(join(root, ".ryedb", "config.json"), JSON.stringify({ httpPort: port }));
+  writeFileSync(join(root, ".ryedb", "token"), "s".repeat(48));
+  const d = await startDaemon({ root, idleMs: 60_000 });
+  try {
+    const lead = new RyeChannel({ port, agentToken: d.store.issueCredential("lead") });
+    const worker = new RyeChannel({ port, agentToken: d.store.issueCredential("worker-1") });
+    const first = await lead.addTask({ body: "write the migration", to: "worker-1", maxAttempts: 2 });
+    const second = await lead.addTask({ body: "run it on staging", to: "worker-1", deps: [first.message.seq] });
+    assert.equal(second.work.state, "waiting");
+
+    const got = await worker.claim({ leaseSeconds: 30 });
+    assert.equal(got!.seq, first.message.seq);
+    assert.equal(await worker.claim(), null, "the second task waits for the first");
+    assert.equal(await worker.heartbeat(first.message.seq, { leaseSeconds: 60 }), true);
+    assert.deepEqual(await worker.finish(first.message.seq, "failed", "lock timeout"), { state: "ready", retry: true });
+    assert.equal((await worker.claim())!.attempts, 2);
+    await assert.rejects(lead.finish(first.message.seq, "done"), (e: unknown) => e instanceof RyeDBError && e.code === "conflict");
+    assert.equal((await worker.finish(first.message.seq, "needs-human", "two ways to do this; which?")).state, "needs-human");
+
+    const board = await lead.board();
+    assert.equal(board.find((t) => t.seq === second.message.seq)!.state, "blocked");
+    const inbox = await lead.notifications({ unreadOnly: true });
+    assert.equal(inbox.length, 1);
+    assert.equal(inbox[0]!.priority, "high");
+    assert.equal(inbox[0]!.reply_to, first.message.seq);
+    await lead.post({ to: "human", kind: "alert", body: "staging is down", priority: "high" });
+    assert.equal((await lead.notifications({ unreadOnly: true })).length, 2);
   } finally {
     await d.close();
     rmSync(root, { recursive: true, force: true });

@@ -50,12 +50,18 @@ for await (const m of ch.stream({ signal: stop.signal })) {
 
 | Call | What it does |
 |---|---|
-| `post({ body, to?, kind?, replyTo? })` | Append a message. `kind: "task"` asks for work; `kind: "result"` with `replyTo` answers it |
+| `post({ body, to?, kind?, replyTo?, priority? })` | Append a message. `kind: "task"` asks for work; `kind: "result"` with `replyTo` answers it. `priority` (`low`, `normal`, `high`) is how much a message to `human` should interrupt them |
 | `read({ after? })` | Messages for you after a sequence number; moves no cursor |
 | `stream({ after?, signal? })` | Replay, then live, as an async iterator |
 | `ack(seq, { state? })` | Receipt `received` (default) or `done` |
 | `tasks({ state? })` | Tasks addressed to you: `open` (default), `done`, `all` |
 | `presence()` | Agents seen in the last 10 minutes, and who has a stream open |
+| `addTask({ body, to?, deps?, maxAttempts? })` | A task that waits for other tasks (`deps`, which must exist) and gets `maxAttempts` tries (default 3). Returns `{ message, work }` |
+| `claim({ leaseSeconds?, seq? })` | Take the oldest ready task for a lease (default 300 s); `null` when nothing is ready. Nobody else can take it until the lease runs out |
+| `heartbeat(seq, { leaseSeconds? })` | Still working: extend the lease. `false` when the claim is not yours or has lapsed |
+| `finish(seq, outcome, body?)` | `done` posts the result and unblocks dependants; `failed` retries until attempts run out; `needs-human` closes it for a person. Throws `conflict` when the task is not yours or already closed |
+| `board({ limit? })` | Every task with its state (`waiting`, `ready`, `claimed`, `done`, `failed`, `needs-human`, `blocked`), dependencies, attempts and holder |
+| `notifications({ unreadOnly? })` | What agents sent the person, with whether it was seen and answered. A task that needs a person or runs out of attempts sends one (high priority) |
 
 ## What to keep in mind
 
